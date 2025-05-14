@@ -1,0 +1,226 @@
+---
+title: "Bayesian Analysis"
+format: pdf
+editor: visual
+---
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+#Importing Libraries
+library(ggplot2)
+library(rstan)
+library(bayesplot)
+library(bayesrules)
+library(loo)
+```
+
+```{r}
+#Loading the dataset
+load(url("https://acaimo.github.io/teaching/data/italian_wines.RData"))
+y = italian_wines$alcohol
+x_mag = italian_wines$magnesium
+x_ci = italian_wines$color_intensity
+x = italian_wines[,2:4]
+n = length(y)
+```
+
+### Question 1.
+
+```{r}
+#stan code of 3 linear model
+stan_code = 
+'data {
+  int<lower=1> n;
+  vector[n] y;
+  vector[n] x_ci;
+  vector[n] x_mag;
+  int<lower=0, upper=1> use_ci;
+  int<lower=0, upper=1> use_mag;
+  int<lower=0, upper=1> use_interaction;}
+parameters {
+  real alpha;
+  real beta_ci;
+  real beta_mag;
+  real beta_interaction;
+  real<lower=0> sigma;}
+transformed parameters {
+  vector[n] mu;
+  mu = alpha
+      + (use_ci * beta_ci * x_ci)
+      + (use_mag * beta_mag * x_mag)
+      + (use_interaction * beta_interaction * x_ci .* x_mag);}
+model {
+  alpha ~ normal(11, 3);
+  if (use_ci == 1) beta_ci ~ normal(0.7, 0.3);
+  if (use_mag == 1) beta_mag ~ normal(0.3, 0.3);
+  if (use_interaction == 1) beta_interaction ~ normal(0, 0.3);
+  sigma ~ exponential(1);
+  y ~ normal(mu, sigma);}
+generated quantities {
+  vector[n] log_lik;
+  vector[n] y_tilde;
+  for (i in 1:n) {
+    y_tilde[i] = normal_rng(mu[i], sigma);
+    log_lik[i] = normal_lpdf(y[i] | mu[i], sigma);}}'
+```
+
+\- **alpha \~ normal(11,3)**: Model intercept, i.e., the average alcohol when all predictors are 0.\
+**Rationale**: Mean 11 is selected since mean alcohol content in wines ranges from 11% - 14%. Standard deviation 3 provides reasonable flexibility — spanning a broad credible range, yet still focused around a typical alcohol value.
+
+\- **beta_ci \~ normal(0.7,0.3):** Color intensity effect on alcohol. Color intensity and alcohol are typically positively correlated—i.e., red wines are stronger.\
+**Rationale**: Typically positive correlation but may vary by types of wines. Mean = 0.7: Expect moderate positive effect.SD = 0.3: Allows flexibility—effect may be less or more.\
+- **beta_mag \~ normal(0.3, 0.3):** Effect of magnesium on alcohol. Magnesium is beneficial to yeast metabolism but is less directly related to alcohol than color intensity.\
+**Rationale**: Weakly positive assumed, no strong directional belief. Mean = 0.3: Cautious expectation. SD = 0.3: Allows wide range—from small negative to moderate positive effects.\
+- **beta_interaction \~ normal(0, 0.3):** Interaction between magnesium and color intensity. Models whether the effect of one variable depends on the other.\
+**Rationale**: No previous evidence for interaction, but allow for possible discovery. Mean = 0: No expected effect. SD = 0.3: Allows for small to moderate interactions if data warrants.
+
+\- **sigma \~ exponential(1):** Residual standard deviation.\
+**Rationale**: Exponential distribution is a default weakly informative prior in Bayesian models. This is the default prior for the standard deviation of residuals if you do not wish to make too many assumptions. It implements positivity (sigma \> 0) and shrinks towards small value.
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+NLR_model = stan_model(model_code = stan_code)
+NLR_posterior_ci = sampling(NLR_model, iter = 2000, seed = 42,
+                            data = list(n = n, y = y, x_mag = log(x_mag), x_ci = log(x_ci), 
+                                        use_ci = 1, use_mag = 0, use_interaction = 0))
+NLR_posterior_mag = sampling(NLR_model, iter = 2000, seed = 42,
+                            data = list(n = n, y = y, x_mag = log(x_mag), x_ci = log(x_ci), 
+                                        use_ci = 0, use_mag = 1, use_interaction = 0))
+NLR_posterior_interaction = sampling(NLR_model, iter = 2000, seed = 42,
+                            data = list(n = n, y = y, x_mag = log(x_mag), x_ci = log(x_ci), 
+                                        use_ci = 1, use_mag = 1, use_interaction = 1))
+```
+
+```{r}
+print(NLR_posterior_ci, pars = c('alpha', 'beta_ci', 'sigma'))
+print(NLR_posterior_mag, pars = c('alpha', 'beta_mag', 'sigma'))
+print(NLR_posterior_interaction, 
+      pars = c('alpha', 'beta_ci','beta_mag','beta_interaction', 'sigma'))
+```
+
+**Model 1: Color Intensity Only**\
+- **alpha: Mean=11.41, SD=0.16**: If color intensity is zero, alcohol level is approximately 11.41%, which is characteristic of wine.\
+- **beta_ci: Mean=1.05, SD=0.10:** **The positive impact of color intensity** on alcohol level is strong and specific (**95% CI: \[0.86, 1.24\]**). This suggests that **an increase in color intensity by one unit increases alcohol level by \~1.05%.**\
+- **sigma: Mean=0.64, SD=0.03:** The standard deviation of the model residuals is extremely small **(\~0.64)**, indicating a nice tight fit.\
+- **Prior vs Posterior:** The prior significantly positively affected things (0.7), whereas the posterior went up further (1.05) with decreased uncertainty. Our data overwhelmingly supported our belief that color intensity was more positively effective on alcohol than we initially guessed.
+
+**Model 2: Magnesium Only**\
+- **alpha: Mean=11.50, SD=0.48:** On average, alcohol level is estimated to be **11.50%** at zero magnesium.\
+- **beta_mag**: **Mean=0.78, SD=0.24:** Magnesium has a **positive effect** (95% CI: **\[0.30, 1.24\]**). With each unit of magnesium, alcohol increases by **0.78%**, although this is **less precise** than the estimate for color intensity.\
+- **sigma: Mean=0.79, SD=0.04:** Larger than in Model 1 (\~0.79), meaning **more** **unexplained variation**.\
+- **Prior vs Posterior:** Prior had **small to moderate positive effect**, with center at 0.3. Posterior mean is higher (0.78), which shows more influence of data compared to prior. Data updated our belief significantly, which shows magnesium's larger impact than expected.
+
+**Model 3: Full Interaction**\
+- **alpha: Mean=10.64, SD=0.45:** Lower compared to other models, possibly due to the addition of interaction effects.\
+- **beta_ci: Mean = 0.69, SD=0.24:** Again positive but the effect is weaker (\~0.69) when adjusting for magnesium and interaction. CI: \[0.22, 1.17\]-\>Moderate uncertainty.\
+- **beta_mag: Mean=0.40,SD=0.24:** Again weak positive effect (\~0.40), but now CI encompasses 0 (\[−0.07, 0.86\]), so the **effect is uncertain**.\
+- **beta_interaction:Mean=0.18,SD=0.13:** Very weakly positive (\~0.18), but CI includes 0 too (\[−0.07, 0.43\]), which means there is **not much evidence** for strong interaction.\
+- **sigma:Mean=0.63, SD=0.03:** Smallest in all models (\~0.63), which means **best fit.**\
+- **Prior vs Posterior**: For **beta_ci**, posterior (0.69) is almost identical to prior (0.7) with less uncertainty—data confirms the prior. For **beta_mag**, posterior widened from 0.3 to 0.40, weak update with wide CI—data is weakly informative. For **beta_interaction**, posterior shifted to 0.18 from 0, weak positive effect but with uncertainty. Priors are weakly updated in general, little effect of data on the interaction term.
+
+### Question 2.
+
+```{r}
+ytilde_ci_model = extract(NLR_posterior_ci)$y_tilde
+ytilde_mag_model = extract(NLR_posterior_mag)$y_tilde
+ytilde_interaction_model = extract(NLR_posterior_interaction)$y_tilde
+ppc_dens_overlay(y, ytilde_ci_model[1:1000,]) + ggtitle("Model 1: Color Intensity Model")
+ppc_dens_overlay(y, ytilde_mag_model[1:1000,]) + ggtitle("Model 2: Magnesium Model")
+ppc_dens_overlay(y, ytilde_interaction_model[1:1000,]) + 
+  ggtitle("Model 3: Magnesium and Color Intensity interaction Model")
+```
+
+**Density Plot Analysis:**\
+**Model 1: Colour intensity:**\
+The posterior predictive distribution closely matches observed data (y). This suggests that color intensity alone accounts for a lot of variation in alcohol content, which suggests a good fit of the model.\
+**Model 2: Magnesium:**\
+Fit is nearer in form but not so well aligned as Model 1. Magnesium alone explains part of the variation but is not such a good predictor as color intensity.\
+**Model 3: Interaction Model:**\
+The fit is much the same as Model 1, with minimal improvement only following inclusion of both the predictors and the interaction between them. It follows that magnesium and the interaction term have limited added explanatory ability compared to color intensity.
+
+```{r, message=FALSE, warning=FALSE}
+ppc_stat(y, ytilde_ci_model, stat = "mean") + ggtitle("Model 1: Mean Check")
+ppc_stat(y, ytilde_mag_model, stat = "mean") + ggtitle("Model 2: Mean Check")
+ppc_stat(y, ytilde_interaction_model, stat = "mean") + ggtitle("Model 3: Mean Check")
+```
+
+**Model 1: Color Intensity Only**: This model identifies the mean alcohol level well correctly, which confirms that it fits in terms of central tendency. The predicted distribution is not very spread and well centered.\
+**Model 2: Magnesium Only**: Model 2 also captures the mean quite well, although we already know from earlier analysis that residual variance is greater than Model 1, indicating a poorer overall fit for capturing the mean accurately.\
+**Model 3: Full Interaction**: This model best captures the mean with narrowest spread, reinforcing that the full interaction model provides the most precise match to the observed mean of alcohol.
+
+### Question 3.
+
+```{r}
+loo_compare(list('Model 1' = loo(NLR_posterior_ci), 'Model 2' = loo(NLR_posterior_mag),
+                 'Model 3' = loo(NLR_posterior_interaction)))
+```
+
+```{r, warning=FALSE}
+loo_compare(list('Model 1' = waic(extract_log_lik(NLR_posterior_ci)), 
+                 'Model 2' = waic(extract_log_lik(NLR_posterior_mag)),
+                 'Model 3' = waic(extract_log_lik(NLR_posterior_interaction))))
+```
+
+**Model 3 is the best model** as it has the **lowest elpd_diff** (predicted log pointwise predictive density difference) of **0.0** for both WAIC and LOO comparisons, indicating that it makes the **most accurate predictions**.\
+**Model 1 is the second-best model**, with worse performance than Model 3, an **elpd_diff of -1.9** in both WAIC and LOO. difference is **not statistically significant**, as elpd_diff \< se_diff.\
+**Model 2 is worst**, with a gigantic negative elpd_diff of **-37.5** in both comparisons. Magnesium alone is a poor predictor of alcohol content.
+
+### Question 4.
+
+```{r, message=FALSE, results='hide', warning=FALSE}
+stan_code_gamma_model = 'data {
+  int<lower=1> n;
+  vector[n] y;
+  vector[n] x_mag;
+  vector[n] x_ci;
+  }
+parameters {
+  real alpha;
+  real beta_mag;
+  real beta_ci;
+  real beta_mag_and_ci;
+  real<lower=0> phi; // shape parameter
+  }
+transformed parameters {
+  vector[n] mu;
+  mu = exp(alpha + beta_mag * x_mag + beta_ci * x_ci + beta_mag_and_ci * x_mag .* x_ci);
+  }
+model {
+  alpha ~ normal(11, 3);
+  beta_mag ~ normal(0.7, 0.3);
+  beta_ci ~ normal(0.3, 0.3);
+  beta_mag_and_ci ~ normal(0, 0.3);
+  phi ~ gamma(2, 1); // prior for shape
+  y ~ gamma(mu .* phi, phi); // Gamma parameterization in Stan: shape = mu*phi, rate = phi
+  }
+generated quantities {
+  vector[n] log_lik;
+  vector[n] y_tilde;
+  for (i in 1:n) y_tilde[i] = gamma_rng(mu[i]*phi, phi);
+  for (i in 1:n)
+    log_lik[i] = gamma_lpdf(y[i] | mu[i] * phi, phi);
+}'
+gamma_model = stan_model(model_code = stan_code_gamma_model)
+fit_gamma = sampling(gamma_model, data = list(n = n, y = y, 
+  x_mag = log(x_mag), x_ci = log(x_ci)), iter = 2000, chains = 4, seed = 42)
+```
+
+**Likelihood: Gamma Distribution:** The alcohol content (y) is always **non-negative** and **skewed to the right**—typical traits of Gamma-distributed variables. The log-link ensures all predicted alcohol contents are positive and reflects the multiplicative impact of processes like fermentation and chemical reactions.
+
+**Prior Distributions**:\
+We are employing the same prior distributions of alpha, beta_ci, beta_mag and beta_interaction as for the Gaussian model on the basis of the above argument.\
+phi \~ gamma(2, 1): Prior on the Gamma **shape parameter**. This prior is somewhat precise (mean = 2) so that it does not place too strong assumptions on the data. It is weakly informative, offering a good trade-off between flexibility and regularization, and hence suitable for fitting overdispersed data like alcohol percentage.
+
+```{r}
+loo_compare(list(
+  "Best Gaussian (Interaction)" = loo(NLR_posterior_interaction),
+  "Gamma Model" = loo(extract_log_lik(fit_gamma))))
+```
+
+**Interpretation**:\
+The **elpd_diff of -5.2** indicates that the Gamma model performs **slightly worse** than the Gaussian model in out-of-sample prediction. However, the **standard error of 2.5** suggests that this difference is **not statistically significant**. In practical terms, both models have **comparable predictive accuracy**.
+
+```{r}
+ppc_dens_overlay(y, (extract(fit_gamma)$y_tilde)[1:1000,]) + 
+  ggtitle("Model: Magnesium and Color Intensity interaction Gamma Model")
+```
+
+The replicated data (y_rep, in light blue) closely follows the observed data (y). This indicates good model fit — the Gamma model effectively captures the shape of the alcohol distribution, particularly the central peak around 13%.

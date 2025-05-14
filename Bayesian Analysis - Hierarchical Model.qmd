@@ -1,0 +1,313 @@
+---
+format: pdf
+editor: visual
+---
+
+```{r, warning=FALSE, message=FALSE, results='hide'}
+#Importing the libraries
+library(rstan)
+library(bayesplot)
+library(loo)
+library(gridExtra)
+#Loading the dataset
+load(url("https://acaimo.github.io/teaching/data/referendum.RData"))
+x_i <- x_ij <- referendum$n_yes
+n = length(x_i)
+nc = length(table(referendum$constituency))
+nr = length(table(referendum$region))
+j = referendum$constituency
+k = referendum$region
+n_votes = referendum$n_votes
+```
+
+### Question 1:
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+#Creating pooled binomial model
+pooled_stan_code = "
+  data{
+    int<lower=1> n;
+    int<lower=0> x_i[n];
+    int<lower=0> n_votes[n];}
+  parameters{
+    real alpha;}
+  transformed parameters{
+    real<lower=0, upper=1> theta;
+    theta = inv_logit(alpha);}
+  model{
+    alpha ~ normal(0,5);
+    for(i in 1:n){
+      x_i[i] ~ binomial(n_votes[i], theta);}}
+  generated quantities{
+    vector[n] log_lik;
+    int x_i_tilde[n];
+    for(i in 1:n){
+      log_lik[i] = binomial_lpmf(x_i[i] | n_votes[i],theta);
+      x_i_tilde[i] = binomial_rng(n_votes[i], theta);}}
+"
+pooled_model = stan_model(model_code = pooled_stan_code)
+pm_posterior = sampling(pooled_model, iter = 1000, seed = 1, 
+                        data = list(n = n, x_i = x_i, n_votes = n_votes))
+```
+
+```{r}
+print(pm_posterior, pars = c("alpha", "theta"))
+```
+
+**Interpretation: \
+-\>** The pooled model assumes **complete pooling**, meaning all constituencies are treated as having the same underlying probability of voting "Yes". This is a strong assumption that ignores any potential regional or constituency-level variation.**\
+-\>** $\alpha$ **(log-odds scale): Posterior mean** of $\alpha$**= −0.11**, almost **0**. Since $\alpha$ is close to **0**, it implies that the **underlying probability** $\theta$(after performing **inverse logit transform**) is close to **0.5**. **95% credible interval** for **alpha** is approximately between **−0.15** and **−0.07**. **Uncertainty** is extremely tiny (**SD = 0.02**), so your **estimate** is **reliable**.\
+-\> $\theta$ **(probability scale):** $\theta$ **=** $\text{logit}^{-1}$**(**$\alpha$**)** $\approx$ **0.47**. **Posterior mean** for $\theta$ is about **47%**. **95% credible interval** of $\theta$ is **46%** to **48%**. Once again, the **uncertainty** is extremely small — the **model** is **highly certain** the **true "yes" vote probability** is very close to **50%**.\
+-\> However, because this model **does not allow any group-level variation**, it likely underestimates the uncertainty in the true voting behavior. This concern can be validated in the goodness-of-fit checks.
+
+### Question 2:
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+#Stan code for hierarchial model
+hierarchical_stan_code = "
+  data {
+    int<lower=1> n;             
+    int<lower=1> m;             
+    int<lower=1, upper=m> j[n]; 
+    int<lower=0> x_ij[n];      
+    int<lower=0> n_votes[n];}
+  parameters {
+    real mu;
+    real<lower=0> tau;
+    vector[m] mu_j;}
+  transformed parameters {
+    vector[m] theta_j;
+    theta_j = inv_logit(mu_j);}
+  model {
+    mu ~ normal(0, 5);
+    tau ~ exponential(0.01);
+    mu_j ~ normal(mu, tau);
+    for (i in 1:n) {
+      x_ij[i] ~ binomial(n_votes[i], theta_j[j[i]]);}}
+  generated quantities{
+    vector[n] log_lik;
+    int x_ij_tilde[n];
+    for(i in 1:n){
+      log_lik[i] = binomial_lpmf(x_ij[i] | n_votes[i], theta_j[j[i]]);
+      x_ij_tilde[i] = binomial_rng(n_votes[i], theta_j[j[i]]);}}
+"
+hierarchical_model = stan_model(model_code = hierarchical_stan_code)
+hm_posterior = sampling(hierarchical_model, iter = 1000, seed = 1, 
+  data = list(n = n, m = nc, j = j, x_ij = x_ij, n_votes = n_votes))
+```
+
+```{r}
+print(hm_posterior, pars=c("mu", "tau", "mu_j[12]",
+                           "mu_j[22]","mu_j[31]","theta_j[12]",
+                           "theta_j[22]","theta_j[31]"))
+```
+
+I have printed out only the highest , lowest and middle values mu_j and theta_j to show extreme behaviors. **\
+Interpretations:\
+-\> The hierarchical model allows each constituency to have its own Yes-vote tendency, with partial pooling toward a global mean\
+-\>** The **global mean log-odds** of voting **Yes** across all constituencies ($\mu$), at approximately **−0.12**, which corresponds (under the **inverse-logit function**) to a **probability** of approximately **47%**. This is quite close to the $\theta$ **estimate** from the **pooled model** (\~**0.47**), suggesting that the **overall average** hasn't shifted a lot**.\
+-\>** More importantly, the **model** also predicts a **standard deviation** of **log-odds** between constituencies ($\tau$) of about **0.68**. This is the **crucial thing**: it estimates the **true heterogeneity** in **Yes-vote behavior** between constituencies. If tau were near **zero**, that would suggest constituencies are **similar** and the **pooled model** would be sufficient. But **0.68** is pretty **big** — meaning that **individual constituencies** can be quite **different** from the **overall trend**.\
+-\> **Constituency 22** also stood at **log-odds 1.09**, corresponding to a **Yes-vote probability** of about **75%**. This is a **strong Yes effect** — data in this **constituency** is very **different** from the **national trend**. **Constituency 31** was at **log-odds −1.10**, for a **Yes-vote probability** of only **25%**, a **strong local No preference**. **Constituency 12**, having **log-odds** near **0.08** (and thus a **probability** near **52%**), is placed close to the **average** of the **country** — reflecting more **moderate** or **balanced attitudes**.\
+-\> Because of the **partial pooling**, these **constituency estimates** are not the same as the **raw sample proportions** — they are **smoothed**. A **constituency** with **few observations** but an **extreme result** (e.g., **90% Yes** in only **10 voters**) will not get an **extreme posterior estimate**. The **hierarchical model** guards against **overfitting** the **noise** in **small samples**. This model captures heterogeneity better than the pooled model.
+
+### Question 3:
+
+**Interpretation of the Three-Level Hierarchical Model**
+
+The three-level hierarchical model captures voting behavior at three different levels: individuals, constituencies, and regions. This structure is more flexible and realistic than the pooled or two-level models, as it allows for both within-region and between-region heterogeneity in voting patterns.
+
+**Model structure**:\
+**Level 1 (Individual voters inside constituencies)**\
+**Level 2 (Constituencies inside regions)**\
+**Level 3 (Regions themselves)**
+
+**Model Specification:**
+
+**Level 1 - Likelihood:** The observed data is the number of "Yes" votes in each constituency. These are modeled as binomial outcomes:
+
+$$
+x_{ij} \sim Binomial(n_{ij}, \theta_j) , \text{where } \theta_j = \text{logit}^{-1}(\mu_j)
+$$
+
+Where:\
+$x_{ij}$ : Number of "Yes" votes in constituency j, belonging to region k.\
+$n_{ij}$ : Total votes in constituency j.\
+$\theta_{j}$ : Probability of a Yes vote in constituency j, derived from a logit-transformed parameter.
+
+**Level 2 - Constituency-Level Model:** Each constituency has its own log-odds of a Yes vote, denoted by $\mu_j$, which is modeled as coming from a region-specific distribution:
+
+$$
+\mu_j \sim Normal(\mu_{k}, \sigma)
+$$
+
+Where:\
+$\mu_j$ : Log-odds of Yes vote in constituency j.\
+$\mu_k$ : Mean log-odds of Yes vote in region k.\
+$\sigma$ : Standard deviation of constituency-level log-odds within each region.
+
+This layer captures **variation between constituencies** within the same region. The parameter $\sigma$ controls how much individual constituencies differ from the region mean — a large $\sigma$ indicates more intra-regional diversity.
+
+**Level 3 - Region-Level Model:** Region-specific means $\mu_k$​ are modeled hierarchically around a global average $\mu$:
+
+$$
+\mu_k \sim Normal(\mu, \tau)
+$$
+
+Where:\
+$\mu$ : Overall national-level log-odds of voting Yes.\
+$\tau$ : Standard deviation of region-level log-odds around the national mean.
+
+This level captures **variation between regions**. A large $\tau$ would indicate significant differences in average support for the referendum between regions.
+
+**Parameter Explanation:**
+
+**Global Mean** $\mu$: Represents the average log-odds of a "Yes" vote across the entire population, before considering any regional or constituency effects. If $\mu \approx 0$, the baseline Yes vote probability is about 0.5.
+
+**Regional Level Standard Deviation** $\tau$: Measures the spread of region-specific averages around the global mean. Large $\tau$ means regions have distinct voting tendencies.
+
+**Region Mean** $\mu_k$: Log-odds of Yes vote specific to each region. Each $\mu_k$ shows how that region deviates from the global mean $\mu$.
+
+**Constituency Level Standard Deviation** $\sigma$: Measures how much constituencies within the same region vary from the region’s average. Smaller $\sigma$ implies more similarity within a region.
+
+**Constituency Effects** $\mu_j$ : Region-adjusted log-odds of a Yes vote in each constituency. These are drawn from the distribution centered at the region mean $\mu_k$ , with variability $\sigma$.
+
+**Observed Probability** $\theta_{j}$: The actual probability of voting Yes in each constituency, obtained by applying the inverse logit transformation to $\mu_j$: $\theta_{j} = \text{logit}^{-1}(\mu_j)$ . These values are used in the Binomial likelihood and reflect both constituency and region-specific effects.
+
+This three-level model allows for a more realistic representation of voting behavior by acknowledging that constituencies within a region may behave similarly, but that different regions may exhibit broader differences. It also allows the model to **“borrow strength”** across groups via partial pooling, resulting in **more stable and reliable estimates**, especially when data is sparse in some constituencies or regions.
+
+### Question 4:
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+hierarchical_stan_code_2 = "
+  data{
+    int<lower=1> n;
+    int<lower=1> nc;
+    int<lower=1> nr;
+    int<lower=1, upper=nc> j[n];
+    int<lower=1, upper=nr> k[n];
+    int<lower=0> x_ij[n];
+    int<lower=0> n_votes[n];}
+  parameters{
+    real mu;
+    real<lower=0> tau;
+    vector[nc] mu_j;
+    real<lower=0> sigma;
+    vector[nr] mu_k;}
+  transformed parameters{
+    vector[nc] theta_j;
+    theta_j = inv_logit(mu_j);}
+  model{
+    mu ~ normal(0, 5);
+    tau ~ exponential(0.01);
+    mu_k ~ normal(mu, tau);
+    sigma ~ exponential(0.01);
+    mu_j ~ normal(mu_k[k], sigma);
+    for (i in 1:n) {
+      x_ij[i] ~ binomial(n_votes[i], theta_j[j[i]]);}}
+  generated quantities{
+    vector[n] log_lik;
+    int x_ij_tilde[n];
+    for(i in 1:n){
+      log_lik[i] = binomial_lpmf(x_ij[i] | n_votes[i], theta_j[j[i]]);
+      x_ij_tilde[i] = binomial_rng(n_votes[i], theta_j[j[i]]);}}
+"
+hierarchical_model_2 = stan_model(model_code = hierarchical_stan_code_2)
+hm_posterior_2 = sampling(hierarchical_model_2, iter = 1000, seed = 1, 
+                        data = list(n = n, nc = nc, nr = nr, j = j, k = k,
+                                    x_ij = x_ij, n_votes = n_votes))
+```
+
+```{r}
+print(hm_posterior_2, pars = c("mu", "tau", "mu_j[21]","mu_j[31]",
+                               "mu_j[43]", "sigma", "mu_k", "theta_j[21]",
+                               "theta_j[31]","theta_j[43]"))
+```
+
+Again, I have printed out only the highest , lowest and middle values mu_j and theta_j to show extreme behaviors.
+
+**Interpretation**:\
+-\> The **overall mean log-odds** of **Yes votes** over all **constituencies (**$\mu$**)** is around **−0.13**, corresponding, through the **inverse-logit function**, to a **probability** of a **Yes vote** at around **47%**. This is in close agreement with the **pooled model estimate (\~0.47)**, suggesting that even while accounting for **variation** across **region**, **average support** for the **referendum** is **consistent**.\
+-\> The **model** estimates a **standard deviation** of **log-odds** across **regions (**$\tau$**)** of approximately **1.07**, a relatively **large value**. This tells us that **true regional heterogeneity** exists: some **regions** are much more **subjected to vote Yes** or **No** than others.\
+-\> $\mu_j$**\[21\] = 0.95** -\> $\text{logit}^{-1}$**(0.95)** $\approx$ $\theta_j$**\[21\] = 0.72**. This **constituency** had a **strong local Yes preference**, with about **72% support**.\
+-\> $\mu_j$**\[31\] = −1.07** -\> $\text{logit}^{-1}$**(−1.07)** $\approx$ $\theta_j$**\[31\] = 0.26**. This **area** shows a **significant No-leaning pattern**, with only about **26% support** for **Yes**.\
+-\> $\mu_j$**\[43\] = −0.06** -\> $\text{logit}^{-1}$**(−0.06)** $\approx$ $\theta_j$**\[43\] = 0.49**. This **constituency** is very close to the **national average**, with roughly **equal Yes/No preferences**.\
+-\> The **model** also makes a **prediction** for $\sigma$ $\approx$ 0.27, which accounts for **within-region heterogeneity** of **constituencies**. This is **lower** than $\tau$, meaning constituencies within the same region are more alike.\
+-\> The **regional effects** appear in the $\mu_k$ **parameters**. These range across a **wide value** from **strongly No-leaning (**$\mu_k$**\[4\] = −0.85)** to **strongly Yes-leaning (**$\mu_k$**\[3\] = 0.90)**, underscoring the earlier observation that different **regions** display **significant variation** in **support patterns**.
+
+### Question 5:
+
+```{r}
+x_i_tilde <- extract(pm_posterior)$x_i_tilde
+plot1 = ppc_ribbon(x_i, x_i_tilde[1:800, ], prob_outer = 0.95, 
+                   alpha = 0.9, y_draw = 'points') +
+         ggplot2::xlab('Constituency') + ggplot2::ylab('Number of YES votes') + 
+         legend_none() +  ggplot2::ggtitle("Pooled Model - PPC Ribbon")+
+         ggplot2::theme(plot.title = ggplot2::element_text(size = 10))
+plot2 = ppc_dens_overlay(x_i, x_i_tilde[1:800, ]) +
+         ggplot2::xlab('Number of YES votes') + ggplot2::ylab('Density') + 
+         legend_none() + ggplot2::ggtitle("Pooled Model - PPC Density Overlay")+
+         ggplot2::theme(plot.title = ggplot2::element_text(size = 10))
+grid.arrange(plot1, plot2)
+```
+
+**Goodness-of-Fit:**
+
+**Model 1 - Pooled model**:\
+-\> **Scatter Plot with Bands**: **Posterior predictive uncertainty** are **light blue bands**. **Observed points** are **black dots.** Many observed values fall outside 95% credible bands. Predictive intervals are narrow and fail to capture variability. It suggests that **pooled model** is too **simple** — a **single common parameter** across all **groups** and it has no ability to detect **between-group variability**.\
+**-\> Density Plot**: **Posterior predictive densities** (**thin blue lines**) are **peaked** (around **80-100**) more than **observed data** (**dark line**), which is more **spread out** and **flatter**. In simple words, simulated densities are overly concentrated; observed data is more dispersed.\
+-\> **Conclusion**: Pooled model underfits — it lacks capacity to represent group-level differences
+
+```{r}
+x_ij_tilde <- extract(hm_posterior)$x_ij_tilde
+plot1 = ppc_ribbon(x_ij, x_ij_tilde[1:800, ], prob_outer = 0.95, 
+           alpha = 0.9, y_draw = 'points') +
+  ggplot2::xlab('Constituency') + ggplot2::ylab('Number of YES votes') + 
+  legend_none() + ggplot2::ggtitle("Two Level Hierarchical Model - PPC Ribbon")+
+  ggplot2::theme(plot.title = ggplot2::element_text(size = 10))
+plot2 = ppc_dens_overlay(x_ij, x_ij_tilde[1:800, ]) +
+  ggplot2::xlab('Number of YES votes') + ggplot2::ylab('Density') + 
+  legend_none() + ggplot2::ggtitle("Two Level Hierarchical Model - PPC Density Overlay")+
+  ggplot2::theme(plot.title = ggplot2::element_text(size = 10))
+grid.arrange(plot1, plot2)
+```
+
+**Model 2 - Two level hierarchical model**:\
+-\> **Scatter Plot with Bands**: Most observations within credible **95% posterior predictive intervals**. Ribbons vary more than pooled model — a sign of accounting for heterogeneity.\
+-\> **Density Plot**: The **simulated density** (thick darker line) has a **close correspondence** to the **cloud of simulated densities**. There is a **good correspondence** especially at the **peak** and the **extremities**.\
+-\> **Conclusion**: Two-level model provides a much better fit and captures constituency variation.
+
+```{r}
+x_ij_tilde <- extract(hm_posterior_2)$x_ij_tilde
+plot1 = ppc_ribbon(x_ij, x_ij_tilde[1:800, ], prob_outer = 0.95, 
+           alpha = 0.9, y_draw = 'points') +
+  ggplot2::xlab('Constituency') + ggplot2::ylab('Number of YES votes') + 
+  legend_none() + ggplot2::ggtitle("Three Level Hierarchical Model - PPC Ribbon") +
+  ggplot2::theme(plot.title = ggplot2::element_text(size = 10))
+plot2 = ppc_dens_overlay(x_ij, x_ij_tilde[1:800, ]) +
+  ggplot2::xlab('Number of YES votes') + ggplot2::ylab('Density') + 
+  legend_none() + ggplot2::ggtitle("Three Level Hierarchical Model - PPC Density Overlay") +
+  ggplot2::theme(plot.title = ggplot2::element_text(size = 10))
+grid.arrange(plot1, plot2)
+```
+
+**Model 3 - Three level hierarchical model:**\
+-\> **Scatter Plot with Bands**: The **observed data points** fall well within the **95% posterior predictive intervals**. The **ribbons** are more **stable** and **narrower** than that of the **pooled model**, indicating **greater precision** and **reduced uncertainty**.\
+**-\> Density Plot**: **Actual density** is quite close to the **simulated densities**, especially at the **peak** and along the **tail**. This suggests that the **model** is able to capture the **overall shape**, **skewness**, and **variability** of the **data distribution**.\
+-\> **Conclusion**: Model 3 fits both regional and local patterns well.
+
+**Comparison over two level hierarchical model**: In the range of 100 to 150, I can see a slight dip and rise in the density plot which are predicted well by the level three hierarchical model than level 2 hierarchical model but the differences are hardly noticeable. So we need to use **LOO-CV** to more effectively compare the models and identify better one.
+
+### Question 6:
+
+```{r, warning=FALSE}
+pm_loo_mm <- loo(pm_posterior, moment_match = TRUE, cores = 1)
+hm_loo_mm <- loo(hm_posterior, moment_match = TRUE, cores = 1)
+hm_2_loo_mm <- loo(hm_posterior_2, moment_match = TRUE, cores = 1)
+loo_compare(list('Pooled model' = pm_loo_mm,
+ 'Two Level Hierarchical model' = hm_loo_mm,'Three Level Hierarchical model' = hm_2_loo_mm))
+```
+
+**-\> Level 3 Hierarchical model**: The **best of the three models** with **elpd_diff = 0**, i.e., the **most prediction are accurate** over the other two.\
+-\> **Level 3 vs Level 2 Hierarchical model**: The elpd_diff of -3.0 with SE = 4.0 indicates the difference is not statistically significant, but Level 3 Hierarchical model still performs slightly better.\
+-\> **Pooled model**: Performs substantially worse (elpd_diff = -431.9), confirming underfitting and poor generalization.\
+-\> **Conclusion**: Hierarchical models vastly outperform the pooled model, and the three-level hierarchical structure is the most robust.

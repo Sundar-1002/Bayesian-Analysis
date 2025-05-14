@@ -1,0 +1,208 @@
+---
+title: "Project 1"
+format: pdf
+editor: visual
+---
+
+# STAT40850 Bayesian Analysis
+
+Packages
+
+```{r}
+suppressMessages(library(rstan))
+suppressMessages(library(bayesrules))
+suppressMessages(library(bayesplot))
+```
+
+## Questions :
+
+### 1. Specify and plot a Beta prior distribution P($\theta_A$) with mean E($\theta_A$)=0.65. Calculate the prior probability P($\theta_A$ \< 5).
+
+The **Beta distribution** is parameterised by alpha and beta, where:
+
+E($\theta_A$) = 0.65 = alpha / alpha + beta
+
+```{r}
+#since E(theta_A) = 0.65, we take alpha = 6.5 and beta = 3.5 
+alpha = 6.5 
+beta = 3.5  
+#ploting the graph 
+curve(dbeta(x, alpha, beta), col = 'blue', yaxt = 'n',        
+      lwd = 3, main = 'Beta prior distribution',       
+      xlab = expression(theta[A]), ylab = 'Density',        
+      from = 0, to = 1)
+```
+
+```{r}
+#Computing p(theta_A < 5) 
+prior_prob = pbeta(0.5, alpha, beta) 
+cat("Prior probability less than 0.5 is", prior_prob)
+```
+
+### 2. Estimate and plot the posterior distribution p($\theta_A$ ∣ xA). Calculate the posterior probability Pr($\theta_A$ \> 0.7).
+
+-   **For posterior distribution, theta_A ​∣ xA​ ∼ Beta( alpha + xA ​, beta + nA ​− xA ​)**
+
+```{r}
+# Updating posterior parameters 
+alpha_post = alpha + 169 
+beta_post = beta + (296 - 169)  
+#plotting the graph for the updated posterior parameters 
+curve(dbeta(x, alpha_post, beta_post), col = 'blue', yaxt = 'n',        
+      lwd = 3, main = 'Beta posterior distribution',       
+      xlab = expression(theta[A]), ylab = 'Density',        
+      from = 0, to = 1)
+```
+
+```{r}
+#Computing p(theta_A > 7) 
+post_prob = 1 - pbeta(0.7, alpha_post, beta_post) 
+cat("Posterior probability of theta_a greater than 0.7 is", post_prob)
+```
+
+### 3. Present a brief commentary on the results obtained focusing on whether there is any evidence against the hypothesis that $\theta_A$ = 0.60 a posteriorir.
+
+Let
+
+Null Hypothesis: H0: $\theta_A$ = 0.60
+
+Alternative Hypothesis: Ha: $\theta_A$ != 0.60
+
+```{r}
+low_q <- qbeta(0.025, alpha_post, beta_post)
+upper_q <- qbeta(0.975, alpha_post, beta_post)
+c(low_q, upper_q)
+```
+
+-   The **null hypothesis** (H0​) states that $\theta_A$ = 0.60, while the **alternative hypothesis** (Ha​) states that $\theta_A$ != 0.60.
+
+-   The **95% credible interval** for $\theta_A$​, calculated using the quantile method, is **\[0.5178, 0.6284\]**.
+
+-   Since **0.60 lies within this interval**, we **fail to reject the null hypothesis**.
+
+-   There is **insufficient evidence** to conclude that $\theta_A$ !=0.60.
+
+### 4. Estimate (via Monte Carlo sampling) and plot the posterior predictive distribution Pr(xA∣xA). Comment on the fit of the model to the observed data. Use the sample simulated from the posterior predictive distribution to estimate the probability Pr(xA \>=180 ∣ xA).
+
+```{r}
+#Number of simulations 
+n_sim = 300  
+set.seed(1)  
+#Estimating theta value 
+theta_s = rbeta(n_sim, alpha_post, beta_post)  
+#Simulating future student pass counts using a Binomial model 
+x_a = rbinom(n_sim, 296, theta_s)  
+#Plotting 
+hist(x_a, breaks = 30, col = "red", 
+     main = 'Posterior Predictive Distribution', 
+     xlab = 'Number of Students Passing', 
+     freq = FALSE, border="black")
+```
+
+```{r}
+cat("Median Xa: ", median(x_a))
+```
+
+**Comment on the Fit of the Model:**
+
+-   The distribution appears **bell-shaped**, centered around **160–170 passes**.
+
+-   The actual observed value (169) is **consistent** with the predicted range.
+
+-   Median 169 suggests that **our model fits the observed data well**.
+
+```{r}
+prob_xA_180 = mean(x_a >= 180) 
+cat("Probability of x_A >= 180 given x_A is", prob_xA_180)
+```
+
+**Interpretation:**
+
+The probability of 180+ student passing in the exam is **19.7%.** This align well with the expectation.
+
+### 5.Use **Stan** to estimate the posterior distribution for the probability of passing the exam for each group ($\theta_A$ and $\theta_B$) using the same prior adopted above for $\theta_A$ and a symmetric prior for $\theta_B$. Estimate the posterior distribution of the difference $\theta_diff$= $\theta_B$ − $\theta_A$.
+
+```{r}
+stan_code = ' data {   
+int<lower=0> n_A;  // Total students in group A   
+int<lower=0> y_A;  // Students passing in group A   
+int<lower=0> n_B;  // Total students in group B   
+int<lower=0> y_B;  // Students passing in group B   
+real<lower=0> alpha_A; // Prior alpha for θA   
+real<lower=0> beta_A;  // Prior beta for θA   
+real<lower=0> alpha_B; // Prior alpha for θB   
+real<lower=0> beta_B;  // Prior beta for θB 
+}  
+parameters {   
+// Probability of passing for Group A   
+real<lower=0, upper=1> theta_A;     
+// Probability of passing for Group B   
+real<lower=0, upper=1> theta_B;   
+}  
+transformed parameters {   
+// Difference in pass rates   
+real theta_diff = theta_B - theta_A;   
+}  
+model {   
+// Priors   
+theta_A ~ beta(alpha_A, beta_A);   
+theta_B ~ beta(alpha_B, beta_B);    
+// Likelihood   
+y_A ~ binomial(n_A, theta_A);   
+y_B ~ binomial(n_B, theta_B); 
+}  
+generated quantities {   
+real theta_diff_post = theta_B - theta_A; 
+} '
+```
+
+```{r}
+#Replacing data  
+data_list <- list(   
+  n_A = 296,   
+  y_A = 169,   
+  n_B = 380,   
+  y_B = 247,   
+  alpha_A = 6.5, 
+  beta_A = 3.5,   
+  alpha_B = 5, 
+  beta_B = 5 
+  )  
+#Fitting Stan model 
+st_model <- stan_model(model_code = stan_code)
+fit = sampling(st_model,
+       data = data_list,              
+       iter = 4000, 
+       seed = 1,
+       refresh = 0
+       )  
+#summary statistics 
+print(fit, pars = c("theta_A", "theta_B", "theta_diff_post")) 
+```
+
+### 6. Plot and summarize the posterior distributions estimated in the previous question; estimate of the posterior probability Pr($\theta_diff$ \< 0∣xA,xB) by using the Stan MCMC output; present a brief commentary on the results obtained.
+
+```{r}
+posterior_samples = as.data.frame(fit)
+mcmc_hist(posterior_samples, pars = c('theta_A','theta_B','theta_diff'))
+```
+
+**Estimating Pr(**$\theta_diff$**\< 0 \| xA, xB):**
+
+To estimate this probability, we need to count how many posterior samples of $\theta_diff$are negative and divide it by the total number of samples.
+
+```{r}
+posterior_sample_extract = extract(fit)
+prob_theta_diff_neg <- mean(posterior_sample_extract$theta_diff < 0)
+cat("Posterior probability Pr(theta_diff < 0 | xA, xB):", prob_theta_diff_neg)
+```
+
+**Interpretation:**
+
+The **posterior probability** P(theta_diff \< 0) is **2.34%**, indicating a very low chance that **Method B performs worse than Method A**.
+
+-   Since this probability is **below 5%**, there is **strong evidence** that **Method B has a higher pass rate** than Method A.
+
+-   If P(theta_diff \< 0) were **around 50%**, both methods would be similar, but the low value strongly **favors Method B**.
+
+-   This suggests that **Method B is the better choice** for improving student performance.

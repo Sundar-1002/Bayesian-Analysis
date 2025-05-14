@@ -1,0 +1,266 @@
+---
+title: "Bayesian Analysis - 2"
+format: pdf
+editor: visual
+---
+
+# Assignment - 2
+
+```{r, warning=FALSE, results='hide', message=FALSE}
+#Importing Libraries
+library(ggplot2)
+library(rstan)
+library(bayesplot)
+```
+
+```{r}
+#Loading the data set
+load(url("https://acaimo.github.io/teaching/data/foodexp.RData"))
+head(foodexp)
+```
+
+### 1. Define a Bayesian linear model and justify the selection of appropriate prior parameters based on reasonable prior beliefs. Then, visualize at least 1,000 prior predictions of the regression line $\mu = \alpha + \beta x$.
+
+```{r}
+n_sim = 1000
+n = nrow(foodexp)
+set.seed(101)
+
+#Determining priors
+alpha = rnorm(n_sim, 15, 5)
+beta = rnorm(n_sim, 1, 0.3)
+sigma = runif(n_sim, 0, 10)
+
+y = foodexp$food
+x = foodexp$income
+
+#Plotting graph for observed data
+plot(x, y, 
+     xlab = "Income", 
+     ylab = "Food Expenditure", 
+     xlim = c(25,100), 
+     ylim = c(0,120))
+for (i in 1:1000){
+  mu = alpha[i] + beta[i] * x
+  lines(x, mu, col = rgb(1,0,0, alpha = 0.05))
+}
+```
+
+**Justification for selection of priors:**
+
+The priors for $\alpha$ **(N(15,5)),** $\beta$ **(N(1,0.3))** and were chosen to ensure **positive food expenditure** **predictions**, as food costs cannot be negative. By centering $\alpha$ at 15 and $\beta$ at 1, with standard deviations of 5 and 0.3 respectively, we ensure that **up to the 3rd sigma, values remain positive**. The uniform prior for $\sigma$ **Uniform(0,10))** captures uncertainty in the error term while keeping it **non-negative**.
+
+**Interpretation on the graph:**
+
+The **red lines** represent **1,000 prior predictions** of the regression line, this shows a range of possible relationships between income and food expenditure based on our initial beliefs.
+
+From the graph, we can see that some lines fall within the observed data points but mostly differs. This suggest us that we need to tweak values of $\alpha$, $\beta$ and $\sigma$.
+
+### 2. Implement your Bayesian model using Stan and summarise the results obtained. Generate new data $\tilde{y}$ from the posterior predictive distribution. Interpret on the results obtained.
+
+```{r}
+#stan code for determining posterior 
+stancode = '
+  data{
+    int <lower=1> n;
+    vector[n] y;
+    vector[n] x;
+  }
+  parameters{
+    real alpha;
+    real beta;
+    real sigma;
+  }
+  model{
+    alpha ~ normal(15, 5);
+    beta ~ normal(1, 0.3);
+    sigma ~ uniform(0, 10);
+    vector[n] mu = alpha + beta * x;
+    y ~ normal(mu, sigma);
+  }
+  generated quantities{
+    vector[n] y_tilde;
+    for(i in 1:n){
+      y_tilde[i] = normal_rng(alpha + beta * x[i], sigma);
+    }
+  }
+'
+```
+
+```{r, results='hide'}
+set.seed(11)
+#Fitting the stan model
+model = stan_model(model_code = stancode)
+model_posterior = sampling(
+  model, 
+  iter = 5000, 
+  seed = 101, 
+  data = list(n = n, y = y, x = x))
+```
+
+```{r}
+#Summarizing the result
+print(model_posterior, pars = c('alpha', 'beta' , 'sigma'))
+```
+
+```{r}
+post_draws = as.data.frame(model_posterior)
+
+#Plotting the graph of observed data and mu(Regression line)
+ggplot() + 
+  geom_point(data = foodexp, aes(income, food), shape = 19, cex = 0.5) +
+  geom_abline(data = foodexp, 
+              aes(intercept = mean(post_draws$alpha), 
+                  slope = mean(post_draws$beta)), 
+              color = 'red')
+```
+
+This graph shows the **mean posterior relationship (red line)** between income and food expenditure, with the **observed data points (blue)** scattered around it, indicating a **reasonable fit**.
+
+Initially, our **prior predictions were uncertain**, showing a **wide range of possible regression lines**, but after incorporating the data, the **posterior predictions became more precise and less uncertain**.
+
+```{r}
+#Comparing the observed data and predicted mean
+posterior_samples = extract(model_posterior)
+y_tilde = posterior_samples$y_tilde
+
+y_tilde_mean = apply(y_tilde, 2, mean)
+y_tilde_CI = apply(y_tilde, 2, quantile, probs = c(0.025, 0.975))
+
+comparison = data.frame(Income = foodexp$income,
+                        observed = foodexp$food,
+                        predicted_mean = y_tilde_mean,
+                        lower_CI = y_tilde_CI[1,],
+                        upper_CI = y_tilde_CI[2,])
+
+print(comparison)
+```
+
+**Interpretations:**
+
+From the data frame, you can see that the $\tilde{y}$ are close to the **observed values**, and most fall within the **95% credible intervals**.
+
+For example, for an income of **62.48 euros**, the **observed expenditure is 16 euros**, while the **predicted mean is 16.76 euros**, with a range of **(7.11, 26.73)**.
+
+### 3. Estimate, a priori and a posteriori, the 95% interval and the median of the expected daily household food expenditure for food $\mu$ given an household daily income of 50 euro (x=50) and interpret the results obtained.
+
+```{r}
+x_fixed = 50
+
+mu_at_50_post = post_draws$alpha + post_draws$beta * x_fixed
+
+mu_at_50_prior = alpha + beta * x_fixed
+
+#Finding mean and median of the prior
+mean_mu_50_prior = mean(mu_at_50_prior)
+mean_mu_50_post = mean(mu_at_50_post)
+
+median_mu_50_prior = median(mu_at_50_prior)
+median_mu_50_post = median(mu_at_50_post)
+
+#Finding the confidence interval prior and posterior
+mu_50_prior_CI = quantile(mu_at_50_prior, probs = c(0.025, 0.975))
+mu_50_post_CI = quantile(mu_at_50_post, probs = c(0.025, 0.975))
+
+#Printing the results
+cat("Priori Results:\n",
+    "Mean of the Expected daily household: ", mean_mu_50_prior,
+    "\n Median of the Expected daily household: ", median_mu_50_prior,
+    "\n 95% CI: ", mu_50_prior_CI)
+
+cat("\n\nPosteriori Results:\n",
+    "Mean of the Expected daily household: ", mean_mu_50_post,
+    "\n Median of the Expected daily household: ", median_mu_50_post,
+    "\n 95% CI: ", mu_50_post_CI)
+```
+
+**Interpretations:**
+
+Our prior belief suggested that the expected daily household food expenditure for an income of 50 euros had a mean of **64.59 euros** and a median of **65.42 euros**, with a wide 95% credible interval of **(33.26, 96.17)**, reflecting high uncertainty.
+
+After incorporating the data, the posterior estimates became more precise, with a mean of **14.87 euros**, a median of **14.86 euros**, and a narrower 95% credible interval of **(13.26, 16.48)**.
+
+This significant shift shows how the data refined our predictions, **reducing uncertainty** and providing a **more reliable estimate**.
+
+### 4. Visualise the 80% posterior prediction interval for the estimated model.
+
+```{r}
+#Finding the 80% CI for the estimated model
+y_tilde_CI_80 = apply(y_tilde, 2, quantile, prob = c(0.1, 0.9))
+y_tilde_CI_80_min = y_tilde_CI_80[1,]
+y_tilde_CI_80_max = y_tilde_CI_80[2,]
+
+#Visulasing the result
+ggplot() + 
+  geom_point(data = foodexp, 
+             aes(income, food), 
+             shape = 19, 
+             cex = 0.5) +
+  geom_abline(data = post_draws, 
+              aes(intercept = mean(alpha), slope = mean(beta)), 
+              color = 2) +
+  ggtitle("80% posterior predictive interval") +
+  geom_ribbon(data = foodexp, 
+              mapping = aes(income, 
+                            ymin = y_tilde_CI_80_min, 
+                            ymax = y_tilde_CI_80_max), 
+              alpha = 0.4)
+```
+
+### 5. Visualise the posterior predictive distribution p($\tilde{y}$\|y) for an household daily income corresponding to 72 euro (x=72).
+
+```{r}
+x_fixed = 72
+
+#Finding mu and y_tilde at x=72
+mu = post_draws$alpha + post_draws$beta * x_fixed
+y_tilde_72 = rnorm(length(mu), mu, post_draws$sigma)
+
+#Calculating mean estimate of y
+mean_y_tilde_72 = mean(y_tilde_72)
+CI_y_tilde_72 = quantile(y_tilde_72, probs = c(0.025, 0.975))
+
+ggplot() + 
+  geom_density(aes(y_tilde_72), 
+               fill = 'lightskyblue1') +
+  labs(x = 'posterior predictive distribution for x = 72', 
+       title = "Posterior Predictive Distribution for x = 72") + 
+  geom_vline(xintercept = mean_y_tilde_72, color = "red", 
+             linetype = "dashed", 
+             linewidth = 1)+
+  geom_vline(xintercept = CI_y_tilde_72, 
+             color = "blue", 
+             linetype = "dotted", 
+             linewidth = 1)
+```
+
+### 6. Estimate the prior and posterior predictive probability of observing $\tilde{y}$\>25 for an household daily income corresponding to 68 euro (x=68). Briefly compare the differences in the obtained probabilities.
+
+```{r}
+x_fixed = 68
+
+#Calculating mu and y_tilde at x = 68 using prior
+mu_68 = alpha + beta * x_fixed
+y_tilde_68 = rnorm(length(mu_68), mu_68, sigma)
+
+#Calculating mu and y_tilde at x = 68 using posterior
+mu_68_post = post_draws$alpha + post_draws$beta * x_fixed
+y_tilde_68_post = rnorm(length(mu_68_post), mu_68_post, post_draws$sigma)
+
+#Finding probability of y_tilde > 25
+prob_post = mean(y_tilde_68_post > 25)
+prob_prior = mean(y_tilde_68 > 25)
+
+cat("\nPrior predictive probability of observing y_tilde > 25: ", prob_prior,
+    "\nPosterior predictive probability of observing y_tilde > 25: ", prob_post)
+```
+
+**Interpretations**:
+
+Before seeing the data, the **prior predictive probability** of observing $\tilde{y}$**\>25** for a household with a daily income of **68 euros** was **99.5%**, reflecting **high uncertainty** and an optimistic initial belief.
+
+After incorporating the data, the **posterior predictive probability dropped to 6.59%**, showing that the **observed data significantly refined our predictions**.
+
+This **large difference** highlights how the **data updated our beliefs**, shifting from an **overly optimistic prior** to a **more realistic and precise posterior estimate**.
+
+The results demonstrate the **strength of Bayesian analysis** in improving predictions by **combining prior assumptions with observed evidence**.
